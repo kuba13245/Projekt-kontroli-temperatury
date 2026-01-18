@@ -23,6 +23,9 @@
 /* USER CODE BEGIN Includes */
 #include "bmp280.h"
 #include <stdio.h>
+#include "heater.h"
+#include "pid_controller.h"
+#include "fan.h"
 
 /* USER CODE END Includes */
 
@@ -45,16 +48,32 @@
 
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 
 BMP280_HandleTypedef bmp280;
 
-float pressure, temperature, humidity;
+float pressure, temperature, humidity, setpoint=32, sterowanie;
 
 uint16_t size;
 uint8_t Data[256];
+
+Heater_TypeDef myHeater;
+extern TIM_HandleTypeDef htim2;
+
+// Tutaj definiujesz swoje nastawy
+float Kp = 150.0f;  // Wzmocnienie proporcjonalne
+float Ki = 0.1f;   // Wzmocnienie całkujące
+float Kd = 2.0f;  // Wzmocnienie różniczkujące
+
+// Struktura PID
+PID_TypeDef hPID;
+
+Fan_TypeDef myFan;          // Struktura wentylatora
+float fan_speed = 50.0f;
 
 /* USER CODE END PV */
 
@@ -64,6 +83,7 @@ static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -107,6 +127,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART3_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
   char testMsg[] = "UART TEST OK\r\n";
@@ -126,8 +147,10 @@ int main(void)
   size = sprintf((char *)Data, "BMP280: found %s\n", bme280p ? "BME280" : "BMP280");
   HAL_UART_Transmit(&huart3, Data, size, 1000);
 
+  Heater_Init(&myHeater, &htim2, TIM_CHANNEL_1, 5000.0f);
+  PID_Init(&hPID, 5000.0f);
 
-
+  Fan_Init(&myFan, &htim2, TIM_CHANNEL_4, 5000.0f);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -137,7 +160,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	HAL_Delay(100);
 	while (!bmp280_read_float(&bmp280, &temperature, &pressure, &humidity)) {
 		size = sprintf((char *)Data,"Temperature/pressure reading failed\n");
 		HAL_UART_Transmit(&huart3, Data, size, 1000);
@@ -146,7 +168,14 @@ int main(void)
 
 	size = sprintf((char *)Data,"Pressure: %.2f Pa, Temperature: %.2f C\r\n", pressure, temperature);
 	HAL_UART_Transmit(&huart3, Data, size, 1000);
-	HAL_Delay(400);
+
+	sterowanie = PID_Calculate(&hPID, setpoint, temperature, Kp, Ki, Kd);
+	//float pid_out = PID_Calculate(&hPID, 50.0f, temperature);
+	Heater_SetPower(&myHeater, sterowanie);
+
+	Fan_SetPower(&myFan, fan_speed);
+
+	HAL_Delay(100);
   }
   /* USER CODE END 3 */
 }
@@ -254,6 +283,69 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 71;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -301,6 +393,7 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
