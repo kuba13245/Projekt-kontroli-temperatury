@@ -26,6 +26,7 @@
 #include "heater.h"
 #include "pid_controller.h"
 #include "fan.h"
+#include "encoder_logic.h"
 
 /* USER CODE END Includes */
 
@@ -48,6 +49,7 @@
 
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart3;
@@ -56,7 +58,7 @@ UART_HandleTypeDef huart3;
 
 BMP280_HandleTypedef bmp280;
 
-float pressure, temperature, humidity, setpoint=32, sterowanie;
+float pressure, actual_temp, humidity, heating_power, heater_voltage=0.0, fan_speed=0.0, fan_speed_percent;
 
 uint16_t size;
 uint8_t Data[256];
@@ -65,15 +67,18 @@ Heater_TypeDef myHeater;
 extern TIM_HandleTypeDef htim2;
 
 // Tutaj definiujesz swoje nastawy
-float Kp = 150.0f;  // Wzmocnienie proporcjonalne
-float Ki = 0.1f;   // Wzmocnienie całkujące
-float Kd = 2.0f;  // Wzmocnienie różniczkujące
+float Kp = 1200.0f;  // Wzmocnienie proporcjonalne
+float Ki = 3.0f;   // Wzmocnienie całkujące
+float Kd = 60000.0f;  // Wzmocnienie różniczkujące
 
 // Struktura PID
 PID_TypeDef hPID;
 
-Fan_TypeDef myFan;          // Struktura wentylatora
-float fan_speed = 50.0f;
+Fan_TypeDef myFan;
+
+uint32_t count;
+
+UI_StateTypeDef myEncoder;
 
 /* USER CODE END PV */
 
@@ -84,6 +89,7 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -128,11 +134,9 @@ int main(void)
   MX_I2C1_Init();
   MX_USART3_UART_Init();
   MX_TIM2_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 
-  char testMsg[] = "UART TEST OK\r\n";
-  HAL_UART_Transmit(&huart3, (uint8_t*)testMsg, sizeof(testMsg), 100);
-  HAL_Delay(500);
 
   bmp280_init_default_params(&bmp280.params);
   bmp280.addr = BMP280_I2C_ADDRESS_0;
@@ -148,9 +152,12 @@ int main(void)
   HAL_UART_Transmit(&huart3, Data, size, 1000);
 
   Heater_Init(&myHeater, &htim2, TIM_CHANNEL_1, 5000.0f);
-  PID_Init(&hPID, 5000.0f);
+  PID_Init(&hPID, 2500.0f);
 
   Fan_Init(&myFan, &htim2, TIM_CHANNEL_4, 5000.0f);
+
+  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+  EncoderInit(&myEncoder, &htim1, Encoder_btn_GPIO_Port, Encoder_btn_Pin, 25.0f, 0.10f, 20.0f, 40.0f);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -160,20 +167,59 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	while (!bmp280_read_float(&bmp280, &temperature, &pressure, &humidity)) {
+
+	while (!bmp280_read_float(&bmp280, &actual_temp, &pressure, &humidity)) {
 		size = sprintf((char *)Data,"Temperature/pressure reading failed\n");
 		HAL_UART_Transmit(&huart3, Data, size, 1000);
-	  	HAL_Delay(2000);
+		HAL_Delay(2000);
 	}
 
-	size = sprintf((char *)Data,"Pressure: %.2f Pa, Temperature: %.2f C\r\n", pressure, temperature);
-	HAL_UART_Transmit(&huart3, Data, size, 1000);
+	EncoderUpdate(&myEncoder);
 
-	sterowanie = PID_Calculate(&hPID, setpoint, temperature, Kp, Ki, Kd);
-	//float pid_out = PID_Calculate(&hPID, 50.0f, temperature);
-	Heater_SetPower(&myHeater, sterowanie);
+	char *statusStr = myEncoder.isHeatingEnabled ? "[ON]" : "[OFF]";
 
-	Fan_SetPower(&myFan, fan_speed);
+	if (myEncoder.isEditMode) {
+	    size = sprintf((char *)Data, "%s SET: [%.2f]  < Edit | NOW: %.2f C | Heater: %.2f V | Fan: %.1f %% \r\n", statusStr, myEncoder.set_temp, actual_temp, heater_voltage, fan_speed_percent);
+	} else {
+	    size = sprintf((char *)Data, "%s SET:  %.2f          | NOW: %.2f C | Heater: %.2f V | Fan: %.1f %% \r\n", statusStr, myEncoder.set_temp, actual_temp, heater_voltage, fan_speed_percent);
+	}
+	HAL_UART_Transmit(&huart3, Data, size, 100);
+
+	heater_voltage = heating_power * 0.0024;
+	fan_speed_percent = fan_speed * 0.02;
+
+
+
+
+	if (myEncoder.isHeatingEnabled) {
+		// Jeśli włączone -> licz PID i steruj grzałką
+		heating_power = PID_Calculate(&hPID, myEncoder.set_temp, actual_temp, Kp, Ki, Kd);
+	    Heater_SetPower(&myHeater, heating_power);
+
+
+
+	    // Wentylator też włączamy (lub wedle uznania)
+	    if (heating_power > 0.0) {
+	    	fan_speed = 1000.0;
+	    }
+	    else {
+	    	fan_speed = 0.0;
+	    }
+    	Fan_SetPower(&myFan,fan_speed);
+	}
+	else {
+	    // Jeśli wyłączone dwuklikiem -> ZABIJAMY STEROWANIE
+	    // Resetujemy też stan PID (opcjonalne, ale warto żeby człon I nie narósł)
+	    hPID.prevError = 0;
+	    hPID.integral = 0;
+	    heating_power = 0;
+	    heater_voltage = 0;
+
+	    Heater_SetPower(&myHeater, 0.0f); // Grzałka STOP
+	    Fan_SetPower(&myFan, 0.0f);       // Wentylator STOP
+	}
+
+
 
 	HAL_Delay(100);
   }
@@ -283,6 +329,57 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 15;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 15;
+  if (HAL_TIM_Encoder_Init(&htim1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -387,6 +484,7 @@ static void MX_USART3_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -394,8 +492,16 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin : Encoder_btn_Pin */
+  GPIO_InitStruct.Pin = Encoder_btn_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(Encoder_btn_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
