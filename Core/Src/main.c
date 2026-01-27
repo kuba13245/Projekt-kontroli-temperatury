@@ -27,6 +27,7 @@
 #include "pid_controller.h"
 #include "fan.h"
 #include "encoder_logic.h"
+#include "pid_cooling.h"
 
 /* USER CODE END Includes */
 
@@ -58,7 +59,7 @@ UART_HandleTypeDef huart3;
 
 BMP280_HandleTypedef bmp280;
 
-float pressure, actual_temp, humidity, heating_power, heater_voltage=0.0, fan_speed=0.0, fan_speed_percent;
+float pressure, actual_temp, humidity, heating_power, heater_voltage=0.0, fan_speed=0.0, fan_speed_percent, sterowanie_fan;
 
 uint16_t size;
 uint8_t Data[256];
@@ -67,9 +68,9 @@ Heater_TypeDef myHeater;
 extern TIM_HandleTypeDef htim2;
 
 // Tutaj definiujesz swoje nastawy
-float Kp = 1200.0f;  // Wzmocnienie proporcjonalne
-float Ki = 3.0f;   // Wzmocnienie całkujące
-float Kd = 60000.0f;  // Wzmocnienie różniczkujące
+float Kp = 1500;  // Wzmocnienie proporcjonalne
+float Ki = 1.2;   // Wzmocnienie całkujące
+float Kd = 2800;  // Wzmocnienie różniczkujące
 
 // Struktura PID
 PID_TypeDef hPID;
@@ -79,6 +80,11 @@ Fan_TypeDef myFan;
 uint32_t count;
 
 UI_StateTypeDef myEncoder;
+
+PID_Cooling_TypeDef hPID_Cool;
+float Kp_c = 1000.0f;
+float Ki_c = 0.8f;
+float Kd_c = 0.0f; // Dla wentylatora D często jest zbędne
 
 /* USER CODE END PV */
 
@@ -152,12 +158,14 @@ int main(void)
   HAL_UART_Transmit(&huart3, Data, size, 1000);
 
   Heater_Init(&myHeater, &htim2, TIM_CHANNEL_1, 5000.0f);
-  PID_Init(&hPID, 2500.0f);
+  PID_Init(&hPID, 2200.0f);
 
   Fan_Init(&myFan, &htim2, TIM_CHANNEL_4, 5000.0f);
 
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
   EncoderInit(&myEncoder, &htim1, Encoder_btn_GPIO_Port, Encoder_btn_Pin, 25.0f, 0.10f, 20.0f, 40.0f);
+
+  PID_Cooling_Init(&hPID_Cool, 5000.0f);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -196,16 +204,15 @@ int main(void)
 		heating_power = PID_Calculate(&hPID, myEncoder.set_temp, actual_temp, Kp, Ki, Kd);
 	    Heater_SetPower(&myHeater, heating_power);
 
+	    sterowanie_fan = PID_Cooling_Calculate(&hPID_Cool, myEncoder.set_temp, actual_temp, Kp_c, Ki_c, Kd_c);
+
 
 
 	    // Wentylator też włączamy (lub wedle uznania)
-	    if (heating_power > 0.0) {
-	    	fan_speed = 1000.0;
+	    if (sterowanie_fan == 0.0) {
+	    	sterowanie_fan = 1000.0;
 	    }
-	    else {
-	    	fan_speed = 0.0;
-	    }
-    	Fan_SetPower(&myFan,fan_speed);
+	    Fan_SetPower(&myFan, sterowanie_fan);
 	}
 	else {
 	    // Jeśli wyłączone dwuklikiem -> ZABIJAMY STEROWANIE
@@ -218,6 +225,8 @@ int main(void)
 	    Heater_SetPower(&myHeater, 0.0f); // Grzałka STOP
 	    Fan_SetPower(&myFan, 0.0f);       // Wentylator STOP
 	}
+
+
 
 
 
