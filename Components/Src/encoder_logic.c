@@ -12,7 +12,7 @@ void EncoderInit(UI_StateTypeDef *ui, TIM_HandleTypeDef *htim, GPIO_TypeDef *btn
     ui->minLimit = min;
     ui->maxLimit = max;
 
-    ui->isEditMode = false;
+    ui->isEditMode = true;
     ui->isHeatingEnabled = false; // Domyślnie grzanie wyłączone
 
     ui->lastBtnTick = 0;

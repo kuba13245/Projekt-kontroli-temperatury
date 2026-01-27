@@ -28,6 +28,7 @@
 #include "fan.h"
 #include "encoder_logic.h"
 #include "pid_cooling.h"
+#include "i2c-lcd.h"
 
 /* USER CODE END Includes */
 
@@ -49,6 +50,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -96,6 +98,7 @@ static void MX_I2C1_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -141,6 +144,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM2_Init();
   MX_TIM1_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -153,9 +157,6 @@ int main(void)
   	HAL_UART_Transmit(&huart3, Data, size, 1000);
   	HAL_Delay(2000);
   }
-  bool bme280p = bmp280.id == BME280_CHIP_ID;
-  size = sprintf((char *)Data, "BMP280: found %s\n", bme280p ? "BME280" : "BMP280");
-  HAL_UART_Transmit(&huart3, Data, size, 1000);
 
   Heater_Init(&myHeater, &htim2, TIM_CHANNEL_1, 5000.0f);
   PID_Init(&hPID, 2200.0f);
@@ -163,9 +164,21 @@ int main(void)
   Fan_Init(&myFan, &htim2, TIM_CHANNEL_4, 5000.0f);
 
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
-  EncoderInit(&myEncoder, &htim1, Encoder_btn_GPIO_Port, Encoder_btn_Pin, 25.0f, 0.10f, 20.0f, 40.0f);
+  EncoderInit(&myEncoder, &htim1, Encoder_btn_GPIO_Port, Encoder_btn_Pin, 25.0f, 0.10f, 25.0f, 40.0f);
 
   PID_Cooling_Init(&hPID_Cool, 5000.0f);
+
+
+  lcd_init();
+  lcd_clear();
+
+    // Wpisujemy statyczne napisy raz na początku (żeby nie tracić czasu w pętli)
+  lcd_put_cur(0, 0);
+  lcd_send_string("T:");
+  lcd_put_cur(1, 0);
+  lcd_send_string("S:");
+
+  char lcd_buffer[16]; // Bufor na tekst
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -221,16 +234,29 @@ int main(void)
 	    hPID.integral = 0;
 	    heating_power = 0;
 	    heater_voltage = 0;
+	    sterowanie_fan = 0;
 
 	    Heater_SetPower(&myHeater, 0.0f); // Grzałka STOP
-	    Fan_SetPower(&myFan, 0.0f);       // Wentylator STOP
+	    Fan_SetPower(&myFan, sterowanie_fan);       // Wentylator STOP
 	}
+	int fan_percent = (int)(sterowanie_fan / 50.0f);
+	sprintf(lcd_buffer, "%.2f%cC F:%d%% ", actual_temp, 0xDF, fan_percent);
+	lcd_put_cur(0, 2); // Przesuwamy kursor za napis "T:"
+	lcd_send_string(lcd_buffer);
+
+	        // Wiersz 1: Setpoint + PWM
+	        // Wyświetlamy np. "S: 30.0 P:100%"
+	int pwm_percent = (int)(heating_power / 22.0f); // 2200 -> 100%
+	sprintf(lcd_buffer, "%.2f%cC H:%d%% ", myEncoder.set_temp, 0xDF, pwm_percent);
+	lcd_put_cur(1, 2); // Za napis "S:"
+	lcd_send_string(lcd_buffer);
 
 
 
 
 
-	HAL_Delay(100);
+
+	HAL_Delay(50);
   }
   /* USER CODE END 3 */
 }
@@ -334,6 +360,54 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x20404768;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
@@ -503,8 +577,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin : Encoder_btn_Pin */
   GPIO_InitStruct.Pin = Encoder_btn_Pin;
