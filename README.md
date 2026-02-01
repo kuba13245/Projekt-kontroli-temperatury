@@ -66,9 +66,14 @@ System akceptuje komendy w dwóch formatach:
 | **Txxx** | Ustaw temperaturę (x10) | `T300*2BF4` |
 
 
-## ⚙️ Konfiguracja
+## Konfiguracja
 
 Projekt został wygenerowany przy użyciu **STM32CubeMX**.
 * **Pętla Główna:** Znajduje się w pliku `main.c`.
 * **Strojenie PID:** Stałe `Kp`, `Ki`, `Kd` są zdefiniowane na początku pliku `main.c`.
 * **Czas Próbkowania:** Możliwość zmiany poprzez definicję `#define LOOP_TIME_MS`.
+
+## Zdjęcia układu
+![układ](https://github.com/user-attachments/assets/ede39513-c3c2-4d17-9924-415e6430b8a7)
+![układ 2](https://github.com/user-attachments/assets/0519e626-1003-4be4-8797-3cc5c9c2c6ff)
+
