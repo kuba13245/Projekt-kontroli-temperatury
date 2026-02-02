@@ -56,8 +56,6 @@ Format: ` $ZZZZ,AAAA,HHH,FFF\r\n`
 ### 2. Komendy Sterujące (Wejściowe)
 
 System akceptuje komendy w dwóch formatach:
-* **Zabezpieczony:** `KOMENDA*CRC` (Zalecany dla automatyki/Simulinka)
-* **Niezabezpieczony:** `KOMENDA` (Do ręcznych testów w terminalu)
 
 | Komenda | Opis | Przykład (Z CRC) |
 | :--- | :--- | :--- |
